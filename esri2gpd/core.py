@@ -4,12 +4,13 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import requests
+from tenacity import retry
 from arcgis2geojson import arcgis2geojson
 from pkg_resources import packaging
 
 GEOPANDAS_VERSION = packaging.version.parse(gpd.__version__)
 
-
+@retry
 def _get_json_safely(response):
     """
     Check for JSON response errors, and if all clear,
@@ -26,7 +27,7 @@ def _get_json_safely(response):
     return json
 
 
-def get(url, fields=None, where=None, limit=None, **kwargs):
+def get(url, fields=None, where=None, limit=None, max_record_count=None, **kwargs):
     """
     Scrape features from a ArcGIS Server REST API and return a
     geopandas GeoDataFrame.
@@ -53,7 +54,9 @@ def get(url, fields=None, where=None, limit=None, **kwargs):
     """
     # Get the max record count
     metadata = requests.get(url, params=dict(f="pjson")).json()
-    max_record_count = metadata["maxRecordCount"]
+
+    if not max_record_count:
+        max_record_count = metadata["maxRecordCount"]
 
     # default behavior matches all features
     if where is None:
@@ -93,15 +96,13 @@ def get(url, fields=None, where=None, limit=None, **kwargs):
         )
 
     out = []
+
     while params["resultOffset"] < total_size:
 
         remaining = total_size - params["resultOffset"]
-        if remaining < max_record_count:
-            params["resultRecordCount"] = remaining
+        params["resultRecordCount"] = min(remaining, max_record_count)
 
-        # get raw features
-        response = requests.get(queryURL, params=params)
-        json = _get_json_safely(response)
+        json = _get_json_safely(requests.get(queryURL, params=params))
 
         # convert to GeoJSON and save
         geojson = [arcgis2geojson(f) for f in json["features"]]
